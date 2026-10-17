@@ -29,6 +29,7 @@ void main() {
 class Wallpaper {
   final String path;
   final String name;
+  final String section;
   final String weekLabel;
   final int weekNum;
   final String url;
@@ -36,6 +37,7 @@ class Wallpaper {
   const Wallpaper({
     required this.path,
     required this.name,
+    required this.section,
     required this.weekLabel,
     required this.weekNum,
     required this.url,
@@ -51,9 +53,23 @@ String rawUrl(String path) {
   ).toString();
 }
 
+String prettify(String s) {
+  final words = s
+      .split(RegExp(r'[-_\s]+'))
+      .where((e) => e.isNotEmpty)
+      .map((e) => e[0].toUpperCase() + e.substring(1))
+      .toList();
+  return words.isEmpty ? s : words.join(' ');
+}
+
+// Folder layout:
+//   wallpapers/<section>/week-01/pic.jpg   (sections, e.g. luffy, zoro)
+//   wallpapers/week-01/pic.jpg             (old layout -> section "General")
 List<Wallpaper> wallpapersFromPaths(List<String> paths) {
   const exts = {'jpg', 'jpeg', 'png', 'webp'};
+  final legacyWeek = RegExp(r'^week[\s_-]*\d+$', caseSensitive: false);
   final out = <Wallpaper>[];
+
   for (final p in paths) {
     final parts = p.split('/');
     if (parts.length < 2 || parts.first != kFolder) continue;
@@ -62,22 +78,38 @@ List<Wallpaper> wallpapersFromPaths(List<String> paths) {
     if (dot < 0 || name.startsWith('.')) continue;
     if (!exts.contains(name.substring(dot + 1).toLowerCase())) continue;
 
-    final folder = parts.length >= 3 ? parts[1] : 'Misc';
-    final m = RegExp(r'\d+').firstMatch(folder);
+    var section = 'General';
+    var weekFolder = '';
+    if (parts.length >= 4) {
+      section = prettify(parts[1]);
+      weekFolder = parts[2];
+    } else if (parts.length == 3) {
+      if (legacyWeek.hasMatch(parts[1])) {
+        weekFolder = parts[1];
+      } else {
+        section = prettify(parts[1]);
+      }
+    }
+
+    final m = RegExp(r'\d+').firstMatch(weekFolder);
     final n = m == null ? 0 : (int.tryParse(m.group(0)!) ?? 0);
-    final label = n > 0 ? 'Week $n' : folder;
+    final label = n > 0 ? 'Week $n' : 'Other';
 
     out.add(Wallpaper(
       path: p,
       name: name,
+      section: section,
       weekLabel: label,
       weekNum: n,
       url: rawUrl(p),
     ));
   }
+
   out.sort((a, b) {
     final c = b.weekNum.compareTo(a.weekNum);
     if (c != 0) return c;
+    final s = a.section.compareTo(b.section);
+    if (s != 0) return s;
     final l = a.weekLabel.compareTo(b.weekLabel);
     if (l != 0) return l;
     return a.name.compareTo(b.name);
@@ -167,6 +199,21 @@ String friendlyError(Object e) {
   return e.toString().replaceFirst('Exception: ', '');
 }
 
+Future<File> fetchToTemp(Wallpaper w) async {
+  final dir = await getTemporaryDirectory();
+  final dot = w.name.lastIndexOf('.');
+  final ext = dot >= 0 ? w.name.substring(dot + 1).toLowerCase() : 'jpg';
+  final file = File('${dir.path}/wall_${w.path.hashCode.abs()}.$ext');
+  if (await file.exists() && await file.length() > 0) return file;
+  final res =
+      await http.get(Uri.parse(w.url)).timeout(const Duration(seconds: 90));
+  if (res.statusCode != 200) {
+    throw Exception('Download failed (${res.statusCode})');
+  }
+  await file.writeAsBytes(res.bodyBytes, flush: true);
+  return file;
+}
+
 // ---------------------------------------------------------------- app
 
 class OpWallsApp extends StatelessWidget {
@@ -203,6 +250,7 @@ class _HomeShellState extends State<HomeShell> {
   List<Wallpaper> _all = const [];
   bool _loading = true;
   String? _error;
+  String _selectedSection = 'All';
   String _selectedWeek = 'All';
 
   @override
@@ -225,8 +273,15 @@ class _HomeShellState extends State<HomeShell> {
       setState(() {
         _all = list;
         _loading = false;
+        if (_selectedSection != 'All' &&
+            !list.any((w) => w.section == _selectedSection)) {
+          _selectedSection = 'All';
+          _selectedWeek = 'All';
+        }
         if (_selectedWeek != 'All' &&
-            !list.any((w) => w.weekLabel == _selectedWeek)) {
+            !list.any((w) =>
+                w.weekLabel == _selectedWeek &&
+                (_selectedSection == 'All' || w.section == _selectedSection))) {
           _selectedWeek = 'All';
         }
       });
@@ -235,7 +290,8 @@ class _HomeShellState extends State<HomeShell> {
       setState(() {
         _loading = false;
         if (_all.isEmpty) {
-          _error = 'Could not load wallpapers.\nCheck your internet, then pull down to retry.';
+          _error =
+              'Could not load wallpapers.\nCheck your internet, then pull down to retry.';
         }
       });
       if (_all.isNotEmpty) {
@@ -264,13 +320,16 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  Widget _chip(String label, {bool isNew = false}) {
+  Widget _chip(String label, bool selected, VoidCallback onTap,
+      {bool isNew = false, IconData? icon}) {
     return Padding(
       padding: const EdgeInsets.only(right: 8),
       child: ChoiceChip(
-        label: Text(isNew ? '$label  ✨ NEW' : label),
-        selected: _selectedWeek == label,
-        onSelected: (_) => setState(() => _selectedWeek = label),
+        avatar: icon == null ? null : Icon(icon, size: 18),
+        showCheckmark: false,
+        label: Text(isNew ? '$label  ✨' : label),
+        selected: selected,
+        onSelected: (_) => onTap(),
       ),
     );
   }
@@ -282,32 +341,70 @@ class _HomeShellState extends State<HomeShell> {
       return _message('No wallpapers yet 🏴‍☠️\nNew ones are added every week!');
     }
 
+    final sections = <String>{for (final w in _all) w.section}.toList()..sort();
+    final latestWeek = _all.map((w) => w.weekNum).fold<int>(0, (a, b) => a > b ? a : b);
+
+    final inSection = _selectedSection == 'All'
+        ? _all
+        : _all.where((w) => w.section == _selectedSection).toList();
+
     final weeks = <String>[];
-    for (final w in _all) {
+    for (final w in inSection) {
       if (!weeks.contains(w.weekLabel)) weeks.add(w.weekLabel);
     }
-    final latest = _all.first.weekNum > 0 ? _all.first.weekLabel : null;
+
     final shown = _selectedWeek == 'All'
-        ? _all
-        : _all.where((w) => w.weekLabel == _selectedWeek).toList();
+        ? inSection
+        : inSection.where((w) => w.weekLabel == _selectedWeek).toList();
+
+    bool sectionHasNew(String s) =>
+        latestWeek > 0 &&
+        _all.any((w) => w.section == s && w.weekNum == latestWeek);
 
     return Column(
       children: [
+        if (sections.length > 1)
+          SizedBox(
+            height: 52,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              children: [
+                _chip('All sections', _selectedSection == 'All', () {
+                  setState(() {
+                    _selectedSection = 'All';
+                    _selectedWeek = 'All';
+                  });
+                }, icon: Icons.folder_copy_rounded),
+                for (final s in sections)
+                  _chip(s, _selectedSection == s, () {
+                    setState(() {
+                      _selectedSection = s;
+                      _selectedWeek = 'All';
+                    });
+                  }, isNew: sectionHasNew(s), icon: Icons.folder_rounded),
+              ],
+            ),
+          ),
         SizedBox(
           height: 52,
           child: ListView(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             children: [
-              _chip('All'),
-              for (final w in weeks) _chip(w, isNew: w == latest),
+              _chip('All weeks', _selectedWeek == 'All',
+                  () => setState(() => _selectedWeek = 'All')),
+              for (final wk in weeks)
+                _chip(wk, _selectedWeek == wk,
+                    () => setState(() => _selectedWeek = wk),
+                    isNew: latestWeek > 0 && wk == 'Week $latestWeek'),
             ],
           ),
         ),
         Expanded(
           child: RefreshIndicator(
             onRefresh: () => _load(force: true),
-            child: WallGrid(items: shown, latestLabel: latest),
+            child: WallGrid(items: shown, latestWeek: latestWeek),
           ),
         ),
       ],
@@ -331,7 +428,7 @@ class _HomeShellState extends State<HomeShell> {
             ),
           );
         }
-        return WallGrid(items: items, latestLabel: null);
+        return WallGrid(items: items, latestWeek: 0);
       },
     );
   }
@@ -363,9 +460,9 @@ class _HomeShellState extends State<HomeShell> {
 
 class WallGrid extends StatelessWidget {
   final List<Wallpaper> items;
-  final String? latestLabel;
+  final int latestWeek;
 
-  const WallGrid({super.key, required this.items, required this.latestLabel});
+  const WallGrid({super.key, required this.items, required this.latestWeek});
 
   @override
   Widget build(BuildContext context) {
@@ -405,7 +502,7 @@ class WallGrid extends StatelessWidget {
                     child: const Icon(Icons.broken_image_outlined),
                   ),
                 ),
-                if (latestLabel != null && w.weekLabel == latestLabel)
+                if (latestWeek > 0 && w.weekNum == latestWeek)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -473,26 +570,20 @@ class _ViewerPageState extends State<ViewerPage> {
       ..showSnackBar(SnackBar(content: Text(m)));
   }
 
-  Future<File> _fetch(Wallpaper w) async {
-    final dir = await getTemporaryDirectory();
-    final dot = w.name.lastIndexOf('.');
-    final ext = dot >= 0 ? w.name.substring(dot + 1).toLowerCase() : 'jpg';
-    final file = File('${dir.path}/wall_${w.path.hashCode.abs()}.$ext');
-    if (await file.exists() && await file.length() > 0) return file;
-    final res =
-        await http.get(Uri.parse(w.url)).timeout(const Duration(seconds: 90));
-    if (res.statusCode != 200) {
-      throw Exception('Download failed (${res.statusCode})');
-    }
-    await file.writeAsBytes(res.bodyBytes, flush: true);
-    return file;
-  }
-
-  Future<void> _run(Future<void> Function() job) async {
+  Future<void> _save() async {
     if (_busy) return;
+    final w = _w;
     setState(() => _busy = true);
     try {
-      await job();
+      final f = await fetchToTemp(w);
+      var ok = await Gal.hasAccess();
+      if (!ok) ok = await Gal.requestAccess();
+      if (!ok) {
+        _toast('Storage permission was denied');
+      } else {
+        await Gal.putImage(f.path, album: kAlbum);
+        _toast('Saved to gallery ✅');
+      }
     } catch (e) {
       _toast('Something went wrong: ${friendlyError(e)}');
     } finally {
@@ -500,59 +591,10 @@ class _ViewerPageState extends State<ViewerPage> {
     }
   }
 
-  Future<void> _save() async {
-    final w = _w;
-    await _run(() async {
-      final f = await _fetch(w);
-      var ok = await Gal.hasAccess();
-      if (!ok) ok = await Gal.requestAccess();
-      if (!ok) {
-        _toast('Storage permission was denied');
-        return;
-      }
-      await Gal.putImage(f.path, album: kAlbum);
-      _toast('Saved to gallery ✅');
-    });
-  }
-
-  Future<void> _set() async {
-    final w = _w;
-    final target = await showModalBottomSheet<String>(
-      context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const ListTile(
-              title: Text('Set as wallpaper',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-            ListTile(
-              leading: const Icon(Icons.home_rounded),
-              title: const Text('Home screen'),
-              onTap: () => Navigator.pop(ctx, 'home'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.lock_rounded),
-              title: const Text('Lock screen'),
-              onTap: () => Navigator.pop(ctx, 'lock'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.smartphone_rounded),
-              title: const Text('Both'),
-              onTap: () => Navigator.pop(ctx, 'both'),
-            ),
-          ],
-        ),
-      ),
+  void _openPreview() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => PreviewPage(wallpaper: _w)),
     );
-    if (target == null) return;
-    await _run(() async {
-      final f = await _fetch(w);
-      await kChannel
-          .invokeMethod('setWallpaper', {'path': f.path, 'target': target});
-      _toast('Wallpaper set 🎉');
-    });
   }
 
   Widget _btn(IconData icon, String label, VoidCallback? onTap,
@@ -573,14 +615,17 @@ class _ViewerPageState extends State<ViewerPage> {
 
   @override
   Widget build(BuildContext context) {
+    final title = _w.section == 'General'
+        ? _w.weekLabel
+        : '${_w.section} • ${_w.weekLabel}';
     return Scaffold(
       backgroundColor: Colors.black,
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: Text('${_w.weekLabel}  •  ${_cur + 1}/${widget.items.length}',
-            style: const TextStyle(fontSize: 16)),
+        title: Text('$title  (${_cur + 1}/${widget.items.length})',
+            style: const TextStyle(fontSize: 15)),
       ),
       body: Stack(
         children: [
@@ -612,36 +657,4 @@ class _ViewerPageState extends State<ViewerPage> {
             ),
           Positioned(
             left: 0,
-            right: 0,
-            bottom: 0,
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ListenableBuilder(
-                      listenable: favStore,
-                      builder: (_, __) {
-                        final f = favStore.has(_w.path);
-                        return _btn(
-                          f ? Icons.favorite : Icons.favorite_border,
-                          f ? 'Saved' : 'Favorite',
-                          () => favStore.toggle(_w.path),
-                          color: f ? Colors.redAccent : null,
-                        );
-                      },
-                    ),
-                    _btn(Icons.download_rounded, 'Download',
-                        _busy ? null : _save),
-                    _btn(Icons.wallpaper_rounded, 'Set', _busy ? null : _set),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
+            righ
