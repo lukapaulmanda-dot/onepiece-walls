@@ -1,0 +1,19 @@
+name: onepiecewalls
+description: One Piece wallpapers, updated weekly.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  shared_preferences: ^2.3.0
+  cached_network_image: ^3.4.1
+  gal: ^2.3.1
+  path_provider: ^2.1.5
+
+flutter:
+  uses-material-design: true
