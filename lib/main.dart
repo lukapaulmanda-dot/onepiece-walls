@@ -657,4 +657,241 @@ class _ViewerPageState extends State<ViewerPage> {
             ),
           Positioned(
             left: 0,
-            righ
+            right: 0,
+            bottom: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ListenableBuilder(
+                      listenable: favStore,
+                      builder: (_, __) {
+                        final f = favStore.has(_w.path);
+                        return _btn(
+                          f ? Icons.favorite : Icons.favorite_border,
+                          f ? 'Saved' : 'Favorite',
+                          () => favStore.toggle(_w.path),
+                          color: f ? Colors.redAccent : null,
+                        );
+                      },
+                    ),
+                    _btn(Icons.download_rounded, 'Download',
+                        _busy ? null : _save),
+                    _btn(Icons.wallpaper_rounded, 'Set',
+                        _busy ? null : _openPreview),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------- preview
+
+class PreviewPage extends StatefulWidget {
+  final Wallpaper wallpaper;
+
+  const PreviewPage({super.key, required this.wallpaper});
+
+  @override
+  State<PreviewPage> createState() => _PreviewPageState();
+}
+
+class _PreviewPageState extends State<PreviewPage> {
+  String _target = 'both';
+  bool _overlay = true;
+  bool _busy = false;
+
+  Future<void> _apply() async {
+    if (_busy) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final nav = Navigator.of(context);
+    setState(() => _busy = true);
+    try {
+      final f = await fetchToTemp(widget.wallpaper);
+      await kChannel
+          .invokeMethod('setWallpaper', {'path': f.path, 'target': _target});
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Wallpaper set 🎉')),
+      );
+      if (mounted) nav.pop();
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Could not set wallpaper: ${friendlyError(e)}')),
+      );
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  static const List<Shadow> _shadow = [
+    Shadow(blurRadius: 10, color: Colors.black54),
+  ];
+
+  Widget _lockMock() {
+    final now = DateTime.now();
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    final h = now.hour % 12 == 0 ? 12 : now.hour % 12;
+    final m = now.minute.toString().padLeft(2, '0');
+    return SafeArea(
+      child: Column(
+        children: [
+          const SizedBox(height: 80),
+          Text(
+            '${days[now.weekday - 1]}, ${months[now.month - 1]} ${now.day}',
+            style: const TextStyle(fontSize: 18, shadows: _shadow),
+          ),
+          Text(
+            '$h:$m',
+            style: const TextStyle(
+                fontSize: 84, fontWeight: FontWeight.w300, shadows: _shadow),
+          ),
+          const Spacer(),
+          const Icon(Icons.lock_rounded, color: Colors.white70),
+          const SizedBox(height: 190),
+        ],
+      ),
+    );
+  }
+
+  Widget _homeMock() {
+    Widget icon() => Container(
+          width: 52,
+          height: 52,
+          decoration: BoxDecoration(
+            color: Colors.white24,
+            borderRadius: BorderRadius.circular(14),
+          ),
+        );
+    Widget row() => Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [icon(), icon(), icon(), icon()],
+        );
+    return SafeArea(
+      child: Column(
+        children: [
+          const SizedBox(height: 90),
+          row(),
+          const SizedBox(height: 28),
+          row(),
+          const SizedBox(height: 28),
+          row(),
+          const Spacer(),
+          row(),
+          const SizedBox(height: 190),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: const Text('Preview', style: TextStyle(fontSize: 16)),
+        actions: [
+          IconButton(
+            tooltip: 'Show or hide phone mock-up',
+            icon: Icon(_overlay ? Icons.visibility : Icons.visibility_off),
+            onPressed: () => setState(() => _overlay = !_overlay),
+          ),
+        ],
+      ),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: CachedNetworkImage(
+              imageUrl: widget.wallpaper.url,
+              fit: BoxFit.cover,
+              placeholder: (_, __) =>
+                  const Center(child: CircularProgressIndicator()),
+              errorWidget: (_, __, ___) => const Center(
+                  child: Icon(Icons.broken_image_outlined, size: 48)),
+            ),
+          ),
+          if (_overlay)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: _target == 'home' ? _homeMock() : _lockMock(),
+              ),
+            ),
+          if (_busy)
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: LinearProgressIndicator(),
+            ),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SegmentedButton<String>(
+                        segments: const <ButtonSegment<String>>[
+                          ButtonSegment<String>(
+                              value: 'home', label: Text('Home')),
+                          ButtonSegment<String>(
+                              value: 'lock', label: Text('Lock')),
+                          ButtonSegment<String>(
+                              value: 'both', label: Text('Both')),
+                        ],
+                        selected: {_target},
+                        showSelectedIcon: false,
+                        onSelectionChanged: (s) =>
+                            setState(() => _target = s.first),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed:
+                                  _busy ? null : () => Navigator.pop(context),
+                              child: const Text('Cancel'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: FilledButton(
+                              onPressed: _busy ? null : _apply,
+                              child: const Text('Set wallpaper'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
